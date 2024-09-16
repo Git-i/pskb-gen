@@ -1,0 +1,6 @@
+[wrap-git]
+url = https://github.com/Git-i/RHI.git
+revision = head
+depth = 1
+[provide]
+pistachio_rhi = rhi_dep

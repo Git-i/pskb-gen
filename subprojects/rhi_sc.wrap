@@ -1,0 +1,6 @@
+[wrap-git]
+url = https://github.com/Git-i/rhi_sc.git
+revision = head
+depth = 1
+[provide]
+rhi_sc = rhi_sc_dep
