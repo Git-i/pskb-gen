@@ -4,12 +4,12 @@ class context {
 public:
     void initialize()
     {
-        RHICreateInstance(&inst);
+        inst = RHI::Instance::Create().value();
         RHI::PhysicalDevice* dev;
         inst->GetPhysicalDevice(0, &dev);
         auto desc = RHI::CommandQueueDesc{.commandListType = RHI::CommandListType::Direct, .Priority = 1.f};
         std::vector<RHI::Ptr<RHI::CommandQueue>> q_vec;
-        std::tie(device, q_vec) = RHI::Device::Create(dev, {&desc,1}, inst->ID).value();
+        std::tie(device, q_vec) = RHI::Device::Create(dev, {&desc,1}, inst).value();
         queue = q_vec[0];
         allocator = device->CreateCommandAllocator(RHI::CommandListType::Direct).value();
         list = device->CreateCommandList(RHI::CommandListType::Direct, allocator).value();
@@ -41,7 +41,7 @@ public:
 private:
     friend class generator;
     RHI::Ptr<RHI::Device> device;
-    RHI::Instance* inst;
+    RHI::Ptr<RHI::Instance> inst;
     RHI::Ptr<RHI::CommandQueue> queue;
     RHI::Ptr<RHI::CommandAllocator> allocator;
     RHI::Ptr<RHI::GraphicsCommandList> list;

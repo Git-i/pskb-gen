@@ -29,6 +29,6 @@ private:
 
 private:
     void create_base();
-    void create_ir();
+    void create_ir(uint32_t ir_size);
     void create_pf();
 };

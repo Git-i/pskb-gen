@@ -1,4 +1,3 @@
-#include <d3d11.h>
 #include "generator.h"
 #include <csignal>
 #include <argparse/argparse.hpp>

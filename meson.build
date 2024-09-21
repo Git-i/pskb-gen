@@ -1,4 +1,4 @@
-project('pskb-gen', 'cpp', default_options: ['cpp_std=c++20'])
+project('pskb-gen', 'cpp', default_options: ['cpp_std=c++20', 'b_sanitize=address'])
 is_linux = build_machine.system() == 'linux'
 cpp = meson.get_compiler('cpp')
 executable('main', [
