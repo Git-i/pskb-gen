@@ -31,5 +31,5 @@ private:
     void create_base();
     void create_ir(uint32_t ir_size);
     void create_pf();
-    void write_ktx(RHI::Weak<RHI::Buffer>, uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, const char* out, uint32_t num_mips);
+    void write_ktx(RHI::Weak<RHI::Buffer>, uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, FILE* out, uint32_t num_mips);
 };

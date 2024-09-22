@@ -2,6 +2,7 @@
 #include "ktx.h"
 #include "vkformat.h"
 #define STB_IMAGE_IMPLEMENTATION
+#include <algorithm>
 #include <dlfcn.h>
 
 #include "stb_image.h"
@@ -500,7 +501,7 @@ uint32_t get_offset(const uint32_t level, const uint32_t layer, const uint32_t n
     offset += static_cast<uint32_t>(base_size * (1.0 - std::pow(0.25, level)) / 0.75);
     return offset;
 }
-void generator::write_ktx(RHI::Weak<RHI::Buffer> buff, uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, const char* out, uint32_t
+void generator::write_ktx(RHI::Weak<RHI::Buffer> buff, uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, FILE* out, uint32_t
                           num_mips = 1)
 {
     ktxTextureCreateInfo inf {
@@ -538,7 +539,9 @@ void generator::write_ktx(RHI::Weak<RHI::Buffer> buff, uint32_t width, uint32_t 
             ktxTexture_SetImageFromMemory(ktxTexture(tx), level, 0, array, data + array * face_size, face_size);
         buff->UnMap();
     }
-    ktxTexture_WriteToNamedFile(ktxTexture(tx), out);
+    std::string writer = "pskb-gen v0";
+    ktxHashList_AddKVPair(&tx->kvDataHead, KTX_WRITER_KEY, writer.size() + 1, writer.data());
+    ktxTexture_WriteToStdioStream(ktxTexture(tx), out);
 }
 void generator::generate()
 {
@@ -553,20 +556,37 @@ void generator::generate()
     RHI::AutomaticAllocationInfo info {.access_mode = RHI::AutomaticAllocationCPUAccessMode::Random};
     auto readback_buffer = ctx.device->CreateBuffer(RHI::BufferDesc{.size = 6 * 1024 * 1024 * 4 * sizeof(uint16_t), .usage = RHI::BufferUsage::CopyDst}, nullptr, nullptr, &info,0, RHI::ResourceType::Automatic).value();
     if(rdoc_api) rdoc_api->StartFrameCapture(NULL, NULL);
+    FILE* output_file = fopen(output.c_str(), "wb");
+    const uint32_t big_enough_placeholder[3]{};
+    fwrite(big_enough_placeholder, sizeof(uint32_t), 3, output_file);
+    if(!output_file) throw std::runtime_error("Could not open output file");
+
     create_base();
     create_ir(32);
     create_pf();
 
-    auto ir_path = output;
-    ir_path.erase(ir_path.find_last_of('.'));
-    ir_path += "_ir.ktx";
+    constexpr auto placeholder_size = sizeof big_enough_placeholder;
+    write_ktx(readback_buffer, width, height, base, output_file);
+    uint32_t base_sz = ftell(output_file) - placeholder_size;
+    write_ktx(readback_buffer, 32, 32, ir, output_file);
+    uint32_t ir_sz = ftell(output_file) - base_sz - placeholder_size;
+    write_ktx(readback_buffer, 128, 128, pf, output_file, 5);
+    uint32_t pf_sz = ftell(output_file) - ir_sz - placeholder_size;
 
-    auto pf_path = output;
-    pf_path.erase(pf_path.find_last_of('.'));
-    pf_path += "_pf.ktx";
-    write_ktx(readback_buffer, 128, 128, pf, pf_path.c_str(), 5);
-    write_ktx(readback_buffer, 32, 32, ir, ir_path.c_str());
-    write_ktx(readback_buffer, width, height, base, output.c_str());
+    if constexpr (std::endian::native != std::endian::little)
+    {
+        std::ranges::reverse(std::as_writable_bytes(std::span{&base_sz, 1}));
+        std::ranges::reverse(std::as_writable_bytes(std::span{&ir_sz, 1}));
+        std::ranges::reverse(std::as_writable_bytes(std::span{&pf_sz, 1}));
+    }
+
+    fseek(output_file, 0, SEEK_SET);
+
+    fwrite(&base_sz, sizeof(uint32_t), 1, output_file);
+    fwrite(&ir_sz, sizeof(uint32_t), 1, output_file);
+    fwrite(&pf_sz, sizeof(uint32_t), 1, output_file);
+
+    fclose(output_file);
     if(rdoc_api) rdoc_api->EndFrameCapture(NULL, NULL);
 
 }
