@@ -25,7 +25,10 @@ void main(uint3 gid : SV_DispatchThreadID)
 {
     float3 normal = normalize(GetSamplerVector(gid));
     float3 up = float3(0.0, 1.0, 0.0);
-    float3 right = normalize(cross(up, normal));
+    float3 right = cross(normal, up);
+    right = lerp(cross(normal, float3(1.0, 0.0, 0.0)), right, step(0.00001, dot(right, right)));
+
+    right = normalize(right);
     up = normalize(cross(normal, right));
     const float sampleDelta = 0.025;
 

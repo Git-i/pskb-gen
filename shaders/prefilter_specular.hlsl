@@ -31,8 +31,8 @@ float3 ImportanceSampleGGX(float2 Xi, float3 N, float roughness)
     };
 
     // from tangent-space vector to world-space sample vector
-    float3 up = float3(1.0, 0.0, 0.0);
-    float3 tangent = cross(up, N);
+    float3 up = float3(0, 1, 0);
+    float3 tangent = cross(N, up);
     tangent = lerp(cross(N, float3(1.0, 0.0, 0.0)), tangent, step(0.000001, dot(tangent, tangent)));
     tangent = normalize(tangent);
     float3 bitangent = normalize(cross(N, tangent));
@@ -78,7 +78,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float NdotL = max(dot(normal, L), 0.0);
         if(NdotL > 0.0)
         {
-            prefilteredColor += env_map.Sample(ss, L) * NdotL;
+            prefilteredColor += env_map.SampleLevel(ss, L, 0) * NdotL;
             totalWeight += NdotL;
         }
     }

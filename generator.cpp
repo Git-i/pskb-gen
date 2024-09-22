@@ -46,6 +46,8 @@ static RHI::creation_result<RHI::Texture> CreateCubeMap(RHI::Weak<RHI::Device> d
 static std::vector<char> CompileShader(std::filesystem::path filename, RHI::API api)
 {
     static auto opt = RHI_SC::CompileOptions::New();
+    opt->EnableDebuggingSymbols();
+    opt->SetOptimizationLevel(RHI_SC::OptimizationLevel::None);
     static auto cmp = RHI_SC::Compiler::New();
     std::vector<char> out;
     if(const auto [warning_count, messages, error] = cmp->CompileToBuffer(api, RHI_SC::ShaderSource{.source = filename, .stage = RHI::ShaderStage::Compute}, opt, out);
