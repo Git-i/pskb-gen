@@ -2,6 +2,8 @@
 #include "ktx.h"
 #include "vkformat.h"
 #define STB_IMAGE_IMPLEMENTATION
+#include <dlfcn.h>
+
 #include "stb_image.h"
 #include <stdexcept>
 #include <memory>
@@ -11,6 +13,7 @@
 #include "float16.h"
 #include "rhi_sc.h"
 #include "ShaderReflect.h"
+#include "renderdoc_app.h"
 
 namespace RHI_SC = RHI::ShaderCompiler;
 std::unique_ptr<std::uint16_t[]> image_4ch_half(const float* const f, uint32_t width, uint32_t height)
@@ -25,7 +28,7 @@ std::unique_ptr<std::uint16_t[]> image_4ch_half(const float* const f, uint32_t w
 }
 static RHI::creation_result<RHI::Texture> CreateCubeMap(RHI::Weak<RHI::Device> device, uint32_t width, uint32_t height, RHI::TextureUsage ex_use, uint32_t num_mips = 1)
 {
-    RHI::AutomaticAllocationInfo inf {RHI::AutomaticAllocationCPUAccessMode::Random};
+    RHI::AutomaticAllocationInfo inf {RHI::AutomaticAllocationCPUAccessMode::None};
     return device->CreateTexture(RHI::TextureDesc{
             .type = RHI::TextureType::Texture2D,
             .width = width,
@@ -34,9 +37,9 @@ static RHI::creation_result<RHI::Texture> CreateCubeMap(RHI::Weak<RHI::Device> d
             .format = RHI::Format::R16G16B16A16_FLOAT,
             .mipLevels = num_mips,
             .sampleCount = 1,
-            .mode = RHI::TextureTilingMode::Linear,
+            .mode = RHI::TextureTilingMode::Optimal,
             .optimizedClearValue = nullptr,
-            .usage = RHI::TextureUsage::CubeMap | RHI::TextureUsage::CopyDst | ex_use
+            .usage = RHI::TextureUsage::CubeMap | RHI::TextureUsage::CopySrc | ex_use
         }, nullptr, nullptr, &inf, 0, RHI::ResourceType::Automatic).value();
 }
 static std::vector<char> CompileShader(std::filesystem::path filename, RHI::API api)
@@ -369,9 +372,9 @@ void generator::create_pf()
     pf = CreateCubeMap(device, 128, 128, RHI::TextureUsage::StorageImage, 5).value();
     std::vector code = CompileShader("../shaders/prefilter_specular.hlsl", ctx.inst->GetInstanceAPI());
     RHI::Ptr refl = RHI::ShaderReflection::CreateFromMemory({code.data(), code.size()}).value();
-    auto [desc, _1, _2] = RHI::ShaderReflection::FillRootSignatureDesc({&refl, 1}, {}, 3);
-    RHI::Ptr<RHI::DescriptorSetLayout> layout;
-    auto rs = device->CreateRootSignature(desc, &layout).value();
+    auto [desc, _1, _2] = RHI::ShaderReflection::FillRootSignatureDesc({&refl, 1}, {}, 2);
+    RHI::Ptr<RHI::DescriptorSetLayout> layout[2];
+    auto rs = device->CreateRootSignature(desc, layout).value();
     auto shader = device->CreateComputePipeline({.CS = {{code.data(), code.size()}}, .mode = RHI::ShaderMode::Memory, .rootSig = rs}).value();
     auto base_view = device->CreateTextureView(RHI::TextureViewDesc{
         .type = RHI::TextureViewType::TextureCube,
@@ -385,21 +388,37 @@ void generator::create_pf()
             .NumArraySlices = 6
         }
     }).value();
-    auto mip0_view = device->CreateTextureView(RHI::TextureViewDesc{
-        .type = RHI::TextureViewType::Texture2DArray,
-            .format = RHI::Format::R16G16B16A16_FLOAT,
-            .texture = pf,
-            .range = RHI::SubResourceRange{
-                .imageAspect = RHI::Aspect::COLOR_BIT,
-                .IndexOrFirstMipLevel = 0,
-                .NumMipLevels = 1,
-                .FirstArraySlice = 0,
-                .NumArraySlices = 6
-            }
-    }).value();
-    auto set = device->CreateDescriptorSets(ctx.descriptorHeap, 1, &layout).value()[0];
+    std::array<RHI::Ptr<RHI::TextureView>, 5> mip_views;
+    std::array<RHI::Ptr<RHI::DescriptorSet>, 5> mip_descs;
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        mip_views[i] = device->CreateTextureView(RHI::TextureViewDesc{
+            .type = RHI::TextureViewType::Texture2DArray,
+                .format = RHI::Format::R16G16B16A16_FLOAT,
+                .texture = pf,
+                .range = RHI::SubResourceRange{
+                    .imageAspect = RHI::Aspect::COLOR_BIT,
+                    .IndexOrFirstMipLevel = i,
+                    .NumMipLevels = 1,
+                    .FirstArraySlice = 0,
+                    .NumArraySlices = 6
+                }
+        }).value();
+        RHI::DescriptorTextureInfo tex_info = {.texture = mip_views[i]};
+        mip_descs[i] = device->CreateDescriptorSets(ctx.descriptorHeap, 1, layout + 1).value()[0];
+        device->UpdateDescriptorSet({
+            {
+                RHI::DescriptorSetUpdateDesc{
+                .binding = 0,
+                .arrayIndex = 0,
+                .numDescriptors = 1,
+                .type = RHI::DescriptorType::CSTexture,
+                .textureInfos = &tex_info
+                }
+            }}, mip_descs[i]);
+    }
+    auto set = device->CreateDescriptorSets(ctx.descriptorHeap, 1, layout).value()[0];
     RHI::DescriptorTextureInfo base_texture_info{base_view};
-    RHI::DescriptorTextureInfo mip0_texture_info{mip0_view};
     RHI::DescriptorSamplerInfo sampler_info {.heapHandle = ctx.samplerHeap->GetCpuHandle()};
     device->UpdateDescriptorSet({
         {
@@ -414,13 +433,6 @@ void generator::create_pf()
                 .binding = 1,
                 .arrayIndex = 0,
                 .numDescriptors = 1,
-                .type = RHI::DescriptorType::CSTexture,
-                .textureInfos = &mip0_texture_info
-            },
-            RHI::DescriptorSetUpdateDesc{
-                .binding = 2,
-                .arrayIndex = 0,
-                .numDescriptors = 1,
                 .type = RHI::DescriptorType::Sampler,
                 .samplerInfos = &sampler_info
             },
@@ -430,7 +442,6 @@ void generator::create_pf()
     ctx.list->SetRootSignature(rs);
     ctx.list->BindComputeDescriptorSet(set, 0);
     ctx.list->SetComputePipeline(shader);
-    ctx.list->PushConstant(3, std::bit_cast<uint32_t>(.0f), 0);
     std::array img_barr = {
         RHI::TextureMemoryBarrier{
             .AccessFlagsBefore = RHI::ResourceAcessFlags::NONE,
@@ -450,7 +461,29 @@ void generator::create_pf()
         }
     };
     ctx.list->PipelineBarrier(RHI::PipelineStage::COMPUTE_SHADER_BIT, RHI::PipelineStage::COMPUTE_SHADER_BIT, {}, img_barr);
-    ctx.list->Dispatch(128, 128, 6);
+    for(uint32_t i = 0; i < 5; i++)
+    {
+        const auto mipSize = static_cast<uint32_t>(128 / std::pow(2, i));
+        ctx.list->PushConstant(2, std::bit_cast<uint32_t>(static_cast<float>(i)/5.f), 0);
+        ctx.list->BindComputeDescriptorSet(mip_descs[i], 1);
+        ctx.list->Dispatch(mipSize, mipSize, 6);
+    }
+    img_barr[0] = RHI::TextureMemoryBarrier{
+    .AccessFlagsBefore = RHI::ResourceAcessFlags::SHADER_READ,
+    .AccessFlagsAfter = RHI::ResourceAcessFlags::TRANSFER_READ,
+    .oldLayout = RHI::ResourceLayout::SHADER_READ_ONLY_OPTIMAL,
+    .newLayout = RHI::ResourceLayout::GENERAL,
+    .texture = base,
+    .previousQueue = RHI::QueueFamily::Ignored,
+    .nextQueue = RHI::QueueFamily::Ignored,
+    .subresourceRange = {
+        .imageAspect = RHI::Aspect::COLOR_BIT,
+        .IndexOrFirstMipLevel = 0,
+        .NumMipLevels = 1,
+        .FirstArraySlice = 0,
+        .NumArraySlices = 6
+    }};
+    ctx.list->PipelineBarrier(RHI::PipelineStage::COMPUTE_SHADER_BIT, RHI::PipelineStage::TRANSFER_BIT, {}, img_barr);
     ctx.list->End();
     ctx.queue->ExecuteCommandLists(&ctx.list->ID, 1);
     ctx.queue->SignalFence(ctx.fence, ++ctx.fence_value);
@@ -467,7 +500,8 @@ uint32_t get_offset(const uint32_t level, const uint32_t layer, const uint32_t n
     offset += static_cast<uint32_t>(base_size * (1.0 - std::pow(0.25, level)) / 0.75);
     return offset;
 }
-void write_ktx(uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, const char* out, uint32_t num_mips = 1)
+void generator::write_ktx(RHI::Weak<RHI::Buffer> buff, uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, const char* out, uint32_t
+                          num_mips = 1)
 {
     ktxTextureCreateInfo inf {
         .glInternalformat = 0,
@@ -477,7 +511,7 @@ void write_ktx(uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, con
         .baseHeight = height,
         .baseDepth = 1,
         .numDimensions = 2,
-        .numLevels = 1,
+        .numLevels = num_mips,
         .numLayers = 1,
         .numFaces = 6,
         .isArray = false,
@@ -485,16 +519,40 @@ void write_ktx(uint32_t width, uint32_t height, RHI::Weak<RHI::Texture> tex, con
     };
     ktxTexture2* tx;
     ktxTexture2_Create(&inf, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &tx);
-    for(uint32_t i = 0; i < 6; i++){
-        const auto data = static_cast<uint8_t*>(tex->Map(RHI::Aspect::COLOR_BIT, 0, i).value());
-        const uint32_t face_size = sizeof(uint16_t) * 4 * width * height;
-        ktxTexture_SetImageFromMemory(ktxTexture(tx), 0, 0, i, data, face_size);
-        tex->UnMap(RHI::Aspect::COLOR_BIT, 0, i);
+    for(auto level : std::views::iota(0u, num_mips))
+    {
+        const auto lv_width = static_cast<uint32_t>(width * std::pow(0.5, level));
+        const auto lv_height = static_cast<uint32_t>(height * std::pow(0.5, level));
+        ctx.list->Begin(ctx.allocator);
+        ctx.list->CopyImageToBuffer(tex, RHI::ResourceLayout::GENERAL, buff, 0, RHI::SubResourceLayers{.imageAspect = RHI::Aspect::COLOR_BIT,
+            .IndexOrFirstMipLevel = level,
+            .FirstArraySlice = 0,
+            .NumArraySlices = 6}, {0,0,0}, {lv_width, lv_height, 1});
+        ctx.list->End();
+        ctx.queue->ExecuteCommandLists(&ctx.list->ID,1);
+        ctx.queue->SignalFence(ctx.fence, ++ctx.fence_value);
+        ctx.fence->Wait(ctx.fence_value);
+        const auto data = static_cast<uint8_t*>(buff->Map().value());
+        const uint32_t face_size = sizeof(uint16_t) * 4 * lv_width * lv_height;
+        for(auto array : std::views::iota(0u, 6u))
+            ktxTexture_SetImageFromMemory(ktxTexture(tx), level, 0, array, data + array * face_size, face_size);
+        buff->UnMap();
     }
     ktxTexture_WriteToNamedFile(ktxTexture(tx), out);
 }
 void generator::generate()
 {
+
+    RENDERDOC_API_1_1_2 *rdoc_api = NULL;
+    if(void *mod = dlopen("librenderdoc.so", RTLD_NOW | RTLD_NOLOAD))
+    {
+        pRENDERDOC_GetAPI RENDERDOC_GetAPI = (pRENDERDOC_GetAPI)dlsym(mod, "RENDERDOC_GetAPI");
+        int ret = RENDERDOC_GetAPI(eRENDERDOC_API_Version_1_1_2, (void **)&rdoc_api);
+        assert(ret == 1);
+    }
+    RHI::AutomaticAllocationInfo info {.access_mode = RHI::AutomaticAllocationCPUAccessMode::Random};
+    auto readback_buffer = ctx.device->CreateBuffer(RHI::BufferDesc{.size = 6 * 1024 * 1024 * 4 * sizeof(uint16_t), .usage = RHI::BufferUsage::CopyDst}, nullptr, nullptr, &info,0, RHI::ResourceType::Automatic).value();
+    if(rdoc_api) rdoc_api->StartFrameCapture(NULL, NULL);
     create_base();
     create_ir(32);
     create_pf();
@@ -506,8 +564,9 @@ void generator::generate()
     auto pf_path = output;
     pf_path.erase(pf_path.find_last_of('.'));
     pf_path += "_pf.ktx";
-    write_ktx(128, 128, pf, pf_path.c_str(), 5);
-    write_ktx(32, 32, ir, ir_path.c_str());
-    write_ktx(width, height, base, output.c_str());
+    write_ktx(readback_buffer, 128, 128, pf, pf_path.c_str(), 5);
+    write_ktx(readback_buffer, 32, 32, ir, ir_path.c_str());
+    write_ktx(readback_buffer, width, height, base, output.c_str());
+    if(rdoc_api) rdoc_api->EndFrameCapture(NULL, NULL);
 
 }

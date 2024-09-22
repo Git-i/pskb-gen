@@ -1,11 +1,11 @@
 TextureCube env_map : register(t0);
-RWTexture2DArray<float4> pf_map : register(u1);
-SamplerState ss : register(s2);
+RWTexture2DArray<float4> pf_map : register(u0, space1);
+SamplerState ss : register(s1);
 struct roughness
 {
     float value;
 };
-[[vk::push_constant]] roughness in_roughness : register(b3);
+[[vk::push_constant]] roughness in_roughness : register(b2);
 static const float PI = 3.142857;
 float RadicalInverse_VdC(uint bits)
 {
